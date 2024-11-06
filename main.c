@@ -15,7 +15,7 @@
 #define CHUNK_LIST_CAP 1024
 
 typedef struct {
-    void *start;
+    uint8_t *ptr;
     size_t size;
 } Chunk;
 
@@ -25,35 +25,23 @@ typedef struct {
 } Chunk_List;
 
 uint8_t heap[HEAP_CAP] = {0};
-static size_t heap_size = 0;
 Chunk_List alloced_chunks = {0};
-Chunk_List freed_chunks = {0};
+Chunk_List freed_chunks = {
+    .chunks = {
+	[0] = {.ptr = heap, .size = sizeof(heap)}
+    },
+    .count = 1,
+};
+Chunk_List tmp_chunks = {0};
 
-void chunk_list_dump(const Chunk_List *list)
-{
-    printf("Chunks (%zu):\n", list->count);
-    for (size_t i = 0; i < list->count; ++i) {
-	printf("  start: 0x%p, size: %zu\n",
-	       list->chunks[i].start,
-	       list->chunks[i].size);
-    }
-}
-
-
-int chunk_list_find(const Chunk_List *list, void *ptr)
-{
-    UNIMPLEMENTED;
-    return -1;
-}
-
-void chunk_list_insert(Chunk_List *list, void *ptr, size_t size)
+void chunk_list_insert(Chunk_List *list, uint8_t *ptr, size_t size)
 {
     assert(list->count < CHUNK_LIST_CAP);
     
-    Chunk chunk = {.start = ptr, .size = size};
+    const Chunk chunk = {.ptr = ptr, .size = size};
     
     for (size_t i = 0; i < list->count; ++i) {
-	if (ptr < list->chunks[i].start) {
+	if (ptr < list->chunks[i].ptr) {
 	    memmove(&list->chunks[i+1], &list->chunks[i], (list->count - i)*sizeof(Chunk));
 	    list->chunks[i] = chunk;
 	    goto end;
@@ -69,53 +57,120 @@ end:
     list->count += 1;
 }
 
+void chunk_list_merge(Chunk_List *dst, const Chunk_List *src)
+{
+    dst->count = 0;
+
+    for (size_t i = 0; i < src->count; ++i) {
+	const Chunk chunk = src->chunks[i];
+	
+	if (dst->count > 0) {
+	    Chunk *top_chunk = &dst->chunks[dst->count - 1];
+
+	    if (top_chunk->ptr + top_chunk->size == chunk.ptr) {
+		top_chunk->size += chunk.size;
+	    } else {
+		chunk_list_insert(dst, chunk.ptr, chunk.size);
+	    }
+	} else {
+	    chunk_list_insert(dst, chunk.ptr, chunk.size);
+	}
+    }
+}
+
+void chunk_list_dump(const Chunk_List *list)
+{
+    printf("Chunks (%zu):\n", list->count);
+    for (size_t i = 0; i < list->count; ++i) {
+	printf("  ptr: 0x%p, size: %zu\n",
+	       list->chunks[i].ptr,
+	       list->chunks[i].size);
+    }
+}
+
+int chunk_ptr_compar(const void *a, const void *b)
+{
+    const Chunk *a_chunk = a;
+    const Chunk *b_chunk = b;
+    
+    return a_chunk->ptr - b_chunk->ptr;
+}
+
+// O(n) now
+// TODO: O(log(n)) binary search
+int chunk_list_find(const Chunk_List *list, void *ptr)
+{
+    for (size_t i = 0; i < list->count; ++i) {
+	if (list->chunks[i].ptr == ptr) {
+	    return (int) i;
+	}
+    }
+
+    return -1;
+}
+
 void chunk_list_remove(Chunk_List *list, size_t index)
 {
-    UNIMPLEMENTED;
+    assert(index < list->count);
+    memmove(&list->chunks[index], &list->chunks[index + 1], (list->count - index)*sizeof(Chunk));
+
+    list->count -= 1;
 }
 
 void *heap_alloc(size_t size)
 {
-    if (size <= 0) {
-	return NULL;
-    }
-    assert(heap_size + size <= HEAP_CAP);
-    
-    void *ptr = (heap + heap_size);
-    heap_size += size;
-    chunk_list_insert(&alloced_chunks, ptr, size);
+    if (size <= 0) return NULL;
 
-    return ptr;
+    chunk_list_merge(&tmp_chunks, &freed_chunks);
+    freed_chunks = tmp_chunks;
+    
+    for (size_t i = 0; i < freed_chunks.count; ++i) {
+	const Chunk chunk = freed_chunks.chunks[i];
+	if (chunk.size >= size) {
+	    chunk_list_remove(&freed_chunks, i);
+
+	    void *const ptr = chunk.ptr;
+	    const size_t tail_size = chunk.size - size;
+	    chunk_list_insert(&alloced_chunks, ptr, size);
+
+	    if (tail_size > 0) {
+		chunk_list_insert(&freed_chunks, chunk.ptr + size, tail_size);
+	    }
+
+	    return ptr;
+	}
+    }
+
+    return NULL;
 }
 
 void heap_free(void *ptr)
-{    
-    UNIMPLEMENTED;
+{
+    if (ptr == NULL) return;
+    
+    const int index = chunk_list_find(&alloced_chunks, ptr);
+    assert(index >= 0);
+
+    chunk_list_insert(&freed_chunks,
+		      alloced_chunks.chunks[index].ptr,
+		      alloced_chunks.chunks[index].size);
+    chunk_list_remove(&alloced_chunks, (size_t) index);
 }
 
 int main(void)
 {
-    /* for (size_t i = 0; i < 100; ++i) { */
-    /* 	heap_alloc(i); */
-    /* } */
+    void *p1 = heap_alloc(1);
+    void *p2 = heap_alloc(2);
 
-    /* heap_alloc(4); */
-    /* heap_alloc(8); */
-    /* heap_alloc(12); */
-
-    Chunk c1 = {.start = (void*)18, .size = 2};
-    Chunk c2 = {.start = (void*)1, .size = 1};
-    Chunk c3 = {.start = (void*)399, .size = 5};
-    Chunk c4 = {.start = (void*)50, .size = 4};
-    Chunk c5 = {.start = (void*)49, .size = 3};
-
-    chunk_list_insert(&alloced_chunks, c1.start, c1.size);
-    chunk_list_insert(&alloced_chunks, c2.start, c2.size);
-    chunk_list_insert(&alloced_chunks, c3.start, c3.size);
-    chunk_list_insert(&alloced_chunks, c4.start, c4.size);
-    chunk_list_insert(&alloced_chunks, c5.start, c5.size);
-    
     chunk_list_dump(&alloced_chunks);
+    chunk_list_dump(&freed_chunks);
+    
+    heap_free(p1);
+    heap_free(p2);
+    heap_alloc(10);
 
+    chunk_list_dump(&alloced_chunks);
+    chunk_list_dump(&freed_chunks);
+    
     return 0;
 }
